@@ -47,14 +47,30 @@ def convertCapital(capitalGain, capitalLoss):
         i = i + 1
     return capitalOptimized
 
+# def combineHoursPerWeek(hoursPerWeek) :
+#     combineHoursPerWeekData = []
+#     for hoursPerWeekData in hoursPerWeek :
+#         hours = '=40'
+#         if hoursPerWeekData < 40 :
+#             hours = '<40'
+#         elif hoursPerWeekData > 40 :
+#             hours = '>40'
+#         combineHoursPerWeekData.append(hours)
+#     return combineHoursPerWeekData
+
 def combineHoursPerWeek(hoursPerWeek) :
     combineHoursPerWeekData = []
     for hoursPerWeekData in hoursPerWeek :
-        hours = '=40'
-        if hoursPerWeekData < 40 :
-            hours = '<40'
-        elif hoursPerWeekData > 40 :
-            hours = '>40'
+        if hoursPerWeekData < 33:
+            hours = "<33"
+        elif hoursPerWeekData < 40 :
+            hours = '>=33 & <40'
+        elif hoursPerWeekData < 45 :
+            hours = ">=40 & <45"
+        elif hoursPerWeekData < 52 :
+            hours = ">=45 & <52"
+        else :
+            hours = '>=52'
         combineHoursPerWeekData.append(hours)
     return combineHoursPerWeekData
 
@@ -94,11 +110,11 @@ def dataCleaningAndPreprocessing(dataset, cleanMissingData):
     newDataSet['hours-per-week'] = combineHoursPerWeek(newDataSet['hours-per-week'])
     if cleanMissingData == True: 
         newDataSet = newDataSet.loc[ (newDataSet['workclass'] != '?') & (newDataSet['occupation'] != '?') & (newDataSet['native-country']!= '?')]
-    # else :
+    else :
         # newDataSet['native-country'] = newDataSet['native-country'].apply(handleUnknownNativeCountry)
         # tread '?' as a group in workclass and occupation, because may have some reasons such as confidential, indescribable
-        #newDataSet['area'] = newDataSet['native-country'].apply(countryToArea)
-       # newDataSet = newDataSet.drop('native-country', axis=1)
+        newDataSet['area'] = newDataSet['native-country'].apply(countryToArea)
+        newDataSet = newDataSet.drop('native-country', axis=1)
     # newDataSet['education'] = newDataSet['education'].apply(convertToEducationLevel)
     return newDataSet
 
@@ -115,24 +131,88 @@ updateAdultTest= dataCleaningAndPreprocessing(adultTest, False)
 headers = removeHeaders(headers)
 print(len(updateAdult.columns))
 
-import wittgenstein as lw
+########data-balancing for original data  ==> tested useless
+# from sklearn.utils import resample
+# majority = updateAdult[updateAdult.income == '<=50K'];
+# minority = updateAdult[updateAdult.income == '>50K'];
+# print(len(majority));
+# print(len(minority));
+
+# minority = resample(minority, replace=True, n_samples=len(majority))
+# updateAdult = pd.concat([majority, minority])
+
+from sklearn.preprocessing import OrdinalEncoder
 from sklearn.metrics import accuracy_score
-# Initialize the RIPPER classifier
-clf = lw.RIPPER()
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import GridSearchCV
+from sklearn.tree import export_text
+import numpy as np
+import time
 
-
-x_train = pd.get_dummies(updateAdult.drop('income', axis=1))
+x_train = updateAdult.drop('income', axis=1)
 y_train = updateAdult['income']
-x_test = pd.get_dummies(updateAdultTest.drop('income', axis=1))
+x_test = updateAdultTest.drop('income', axis=1)
 y_test = updateAdultTest['income']
 
-# Fit the classifier to the training data
-clf.fit(x_train, y_train, pos_class='<=50K')  # Here, pos_class indicates the class we are interested in
+encoder = OrdinalEncoder()
+startTime = time.time()
+x_train_encoded = encoder.fit_transform(x_train)
+x_test_encoded = encoder.transform(x_test)
 
-# Make predictions on the test data
-predictions = clf.predict(x_test)
-predictions = ['<=50K' if pred else '>50K' for pred in predictions]
+#get Best criterion, max_depth, min_samples_leaf, and min_samples_split
+prepruningStartTime = time.time()
+dtc = DecisionTreeClassifier(random_state=0)
+param_grid = {
+    # 'criterion': ['gini', "entropy"],
+    'max_depth': [8,9,10,11,13,15],
+    'min_samples_split': range(5,20,4), 
+    'min_samples_leaf': range(3,10,1)
+}
+gridSearch = GridSearchCV(dtc, 
+                           param_grid,
+                           n_jobs=-1,
+                           verbose=1,
+                           cv=5)
+gridSearch.fit(x_train_encoded, y_train)
+best_params = gridSearch.best_params_
+print(f'get best other params {best_params}')
+prepruningEndTime = time.time()
+timeSpent = prepruningEndTime - prepruningStartTime
+print(f"Pre-Pruning Time spent: {timeSpent:.4f} seconds")
 
-# Now, calculate the accuracy
-accuracy = accuracy_score(y_test, predictions)
-print(f"Accuracy: {accuracy * 100:.2f}%")
+dtc = DecisionTreeClassifier(
+                                max_depth=best_params.get('max_depth'), 
+                                min_samples_leaf=best_params.get('min_samples_leaf'), 
+                                min_samples_split=best_params.get('min_samples_split'),
+                                # ccp_alpha=best_ccp_alpha
+                            )
+dtc.fit(x_train_encoded, y_train)
+# r = export_text(dtc, feature_names=headers)
+# print(r) #print tree
+trainEndtime = time.time()
+timeSpent = trainEndtime - startTime
+print(f"Train Time spent: {timeSpent:.4f} seconds")
+
+test_predictions_tree = dtc.predict(x_test_encoded)
+preditEndtime = time.time()
+timeSpent = preditEndtime - trainEndtime
+print(f"Test Time spent: {timeSpent:.4f} seconds")
+timeSpent = preditEndtime - startTime
+print(f"Overall Time spent: {timeSpent:.4f} seconds")
+
+train_predictions_tree = dtc.predict(x_train_encoded)
+train_accuracy_tree = accuracy_score(y_train, train_predictions_tree)
+test_accuracy_tree = accuracy_score(y_test, test_predictions_tree)
+print(f"train accuracy:  {train_accuracy_tree:.4f}")
+print(f"test accuracy:  {test_accuracy_tree:.4f}")
+
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import classification_report
+cm = confusion_matrix(y_test, test_predictions_tree)
+#cm[0][0] = TP
+#cm[1][1] = TN
+#cm[0][1] = FP
+#cm[1][0] = FN
+print(cm)
+print(classification_report(y_test, test_predictions_tree, digits=4))

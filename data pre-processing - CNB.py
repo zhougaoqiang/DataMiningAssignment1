@@ -4,6 +4,9 @@ headers = ['age','workclass','fnlwgt','education','education-num','marital-statu
 adult=pd.read_csv('adult.data', names=headers, skipinitialspace=True)
 adultTest=pd.read_csv('updateAdult.test', names=headers, skipinitialspace=True)
 
+# for workclass and occupation, I identify missing data as a special catgory, they may be confidential, indescribable, etc.
+# hence, here i did not do any thing, just consider ? is a type of workclass or occupation
+
 def handleUnknownNativeCountry(country) :
     if country == '?' :
         return 'United-States'
@@ -50,11 +53,16 @@ def convertCapital(capitalGain, capitalLoss):
 def combineHoursPerWeek(hoursPerWeek) :
     combineHoursPerWeekData = []
     for hoursPerWeekData in hoursPerWeek :
-        hours = '=40'
-        if hoursPerWeekData < 40 :
-            hours = '<40'
-        elif hoursPerWeekData > 40 :
-            hours = '>40'
+        if hoursPerWeekData < 33:
+            hours = "<33"
+        elif hoursPerWeekData < 40 :
+            hours = '>=33 & <40'
+        elif hoursPerWeekData < 45 :
+            hours = ">=40 & <45"
+        elif hoursPerWeekData < 52 :
+            hours = ">=45 & <52"
+        else :
+            hours = '>=52'
         combineHoursPerWeekData.append(hours)
     return combineHoursPerWeekData
 
@@ -64,7 +72,7 @@ countryGroups = {
     "Europe": ['Holand-Netherlands', 'England', 'Ireland', 'France', 'Yugoslavia', 'Scotland', 'Portugal', 
                'Germany', 'Greece', 'Italy', 'Poland', 'Hungary'],
     "Asia": ['Laos', 'India', 'Philippines', 'Hong', 'Japan', 'Cambodia', 'China', 'Taiwan', 'Iran', 'Thailand', 'Vietnam'],
-    "Other America": ['Jamaica', 'Cuba', 'Dominican-Republic', 'Haiti', 'Trinadad&Tobago', 'Guatemala', 'Honduras', 'El-Salvador', 'Nicaragua','Ecuador', 'Columbia', 'Peru'],
+    "Other America": ['Jamaica', 'Cuba', 'Dominican-Republic', 'Haiti', 'Trinadad&Tobago','Guatemala', 'Honduras', 'El-Salvador', 'Nicaragua','Ecuador', 'Columbia', 'Peru'],
 }
 def countryToArea(country):
     for group, countries in countryGroups.items():
@@ -83,7 +91,7 @@ def convertToEducationLevel(education):
     for level, education in educationLevel.items() :
         if level in education :
             return level
-    return "Unknown"  # no one will call this, but for in case
+    return "Unknown" # no one will call this, but for in case
 
 def dataCleaningAndPreprocessing(dataset, cleanMissingData):
     newDataSet = dataset
@@ -94,45 +102,59 @@ def dataCleaningAndPreprocessing(dataset, cleanMissingData):
     newDataSet['hours-per-week'] = combineHoursPerWeek(newDataSet['hours-per-week'])
     if cleanMissingData == True: 
         newDataSet = newDataSet.loc[ (newDataSet['workclass'] != '?') & (newDataSet['occupation'] != '?') & (newDataSet['native-country']!= '?')]
-    # else :
-        # newDataSet['native-country'] = newDataSet['native-country'].apply(handleUnknownNativeCountry)
-        # tread '?' as a group in workclass and occupation, because may have some reasons such as confidential, indescribable
-        #newDataSet['area'] = newDataSet['native-country'].apply(countryToArea)
-       # newDataSet = newDataSet.drop('native-country', axis=1)
-    # newDataSet['education'] = newDataSet['education'].apply(convertToEducationLevel)
     return newDataSet
 
-def removeHeaders(headers):
-    headers.remove('fnlwgt') 
-    headers.remove('education-num')
-    headers.remove('relationship')
-    headers.remove('capital-loss')
-    headers.remove('native-country')
-    return headers
-    
-updateAdult= dataCleaningAndPreprocessing(adult, False)
-updateAdultTest= dataCleaningAndPreprocessing(adultTest, False)
-headers = removeHeaders(headers)
-print(len(updateAdult.columns))
 
-import wittgenstein as lw
+updateAdult = dataCleaningAndPreprocessing(adult, False)
+updateAdultTest = dataCleaningAndPreprocessing(adultTest, False)
+
+########data-balancing for original data  ==> tested useless
+# from sklearn.utils import resample
+# majority = updateAdult[updateAdult.income == '<=50K'];
+# minority = updateAdult[updateAdult.income == '>50K'];
+# print(len(majority));
+# print(len(minority));
+
+# minority = resample(minority, replace=True, n_samples=len(majority))
+# updateAdult = pd.concat([majority, minority])
+
+##########################
+from sklearn.naive_bayes import CategoricalNB
+from sklearn.preprocessing import OrdinalEncoder
 from sklearn.metrics import accuracy_score
-# Initialize the RIPPER classifier
-clf = lw.RIPPER()
+from sklearn.model_selection import GridSearchCV
+import time
+model = CategoricalNB()
+encoder = OrdinalEncoder()
 
-
-x_train = pd.get_dummies(updateAdult.drop('income', axis=1))
+x_train = updateAdult.drop('income', axis=1)
 y_train = updateAdult['income']
-x_test = pd.get_dummies(updateAdultTest.drop('income', axis=1))
+x_test = updateAdultTest.drop('income', axis=1)
 y_test = updateAdultTest['income']
 
-# Fit the classifier to the training data
-clf.fit(x_train, y_train, pos_class='<=50K')  # Here, pos_class indicates the class we are interested in
+startTime = time.time()
+x_train_encoded = encoder.fit_transform(x_train)
+x_test_encoded = encoder.transform(x_test)
+gnb = model.fit(x_train_encoded,y_train)
+trainEndTime = time.time()
+timeSpent = trainEndTime - startTime
+print(f"Train Time spent: {timeSpent:.4f} seconds")
 
-# Make predictions on the test data
-predictions = clf.predict(x_test)
-predictions = ['<=50K' if pred else '>50K' for pred in predictions]
+test_predictions = gnb.predict(x_test_encoded)
+testEndTime = time.time()
+timeSpent = testEndTime - trainEndTime
+print(f"Test Time spent: {timeSpent:.4f} seconds")
+timeSpent = testEndTime - startTime
+print(f"Overall Time spent: {timeSpent:.4f} seconds")
 
-# Now, calculate the accuracy
-accuracy = accuracy_score(y_test, predictions)
-print(f"Accuracy: {accuracy * 100:.2f}%")
+############################################################
+test_accuracy = accuracy_score(y_test,test_predictions)
+train_predictions = gnb.predict(x_train_encoded)
+train_accuracy = accuracy_score(y_train, train_predictions)
+print(f"train accuracy:  {train_accuracy:.4f}")
+print(f"test accuracy:  {test_accuracy:.4f}")
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import classification_report
+cm = confusion_matrix(y_test, test_predictions)
+print(cm)
+print(classification_report(y_test, test_predictions, digits=4))
